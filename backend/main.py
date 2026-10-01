@@ -1,57 +1,19 @@
 import sqlite3
 import hashlib
-from fastapi import FastAPI, HTTPException, Query ,Depends
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
-from datetime import datetime
 import csv
 import io
-# 1. Database Init for Users
-def init_user_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            role TEXT NOT NULL -- 'Admin' or 'Staff'
-        )
-    """)
-    # Default Admin and Staff Users create गर्ने (यदि छैन भने)
-    cursor.execute("SELECT * FROM users WHERE username = 'admin'")
-    if not cursor.fetchone():
-        # Simple MD5 or SHA256 Hash for password
-        admin_pass = hashlib.sha256("admin123".encode()).hexdigest()
-        staff_pass = hashlib.sha256("staff123".encode()).hexdigest()
-        cursor.execute("INSERT INTO users (username, password, role) VALUES ('admin', ?, 'Admin')", (admin_pass,))
-        cursor.execute("INSERT INTO users (username, password, role) VALUES ('staff', ?, 'Staff')", (staff_pass,))
-    conn.commit()
-    conn.close()
+from datetime import datetime
+from typing import List, Optional
 
-init_user_db()
-# Schemas
-class LoginSchema(BaseModel):
-    username: str
-    password: str
-
-# 2. Login Endpoint
-@app.post("/login")
-def login(req: LoginSchema):
-    hashed_pass = hashlib.sha256(req.password.encode()).hexdigest()
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, username, role FROM users WHERE username = ? AND password = ?", (req.username, hashed_pass))
-    user = cursor.fetchone()
-    conn.close()
-    
-    if user:
-        return {"status": "success", "user": {"id": user[0], "username": user[1], "role": user[2]}}
-    raise HTTPException(status_code=401, detail="गलत प्रयोगकर्ता वा पासवर्ड!")
-
+from fastapi import FastAPI, HTTPException, Query, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
+# १. मुख्य Configuration र Database File Name
+DB_FILE = "chiya_pasal.db"
+
+# २. FastAPI App र CORS Setup
 app = FastAPI(title="Chiya Pasal Ultimate Management API")
 
 app.add_middleware(
@@ -62,33 +24,115 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_FILE = "chiya_pasal.db"
-
-# डाटाबेस कनेक्टिसन सजिलो र सुरक्षित बनाउने फङ्क्सन
+# ----------------
+# Helper Functions
+# ----------------
 def get_db():
     conn = sqlite3.connect(DB_FILE, timeout=10.0)
-    conn.row_factory = sqlite3.Row  # Column name बाट डाटा access गर्न सजिलो बनाउँछ
+    conn.row_factory = sqlite3.Row
     return conn
 
-# SMS अलर्ट फङ्क्सन
 def send_sms_alert(mobile_number: str, message: str):
-    """
-    नेपालको SMS Gateway (उदा: Sparrow SMS / Aakash SMS) मार्फत SMS पठाउने फङ्क्सन
-    """
     print(f"📱 [SMS Sent to {mobile_number}]: {message}")
+
+# ----------------
+# Database Init
+# ----------------
+def init_user_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            role TEXT NOT NULL
+        )
+    """)
+    cursor.execute("SELECT * FROM users WHERE username = 'admin'")
+    if not cursor.fetchone():
+        admin_pass = hashlib.sha256("admin123".encode()).hexdigest()
+        staff_pass = hashlib.sha256("staff123".encode()).hexdigest()
+        cursor.execute("INSERT INTO users (username, password, role) VALUES ('admin', ?, 'Admin')", (admin_pass,))
+        cursor.execute("INSERT INTO users (username, password, role) VALUES ('staff', ?, 'Staff')", (staff_pass,))
+    conn.commit()
+    conn.close()
+
+def init_db():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        cursor.execute('''CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT, price REAL, category TEXT, is_available INTEGER DEFAULT 1
+        )''')
+        
+        cursor.execute("SELECT COUNT(*) FROM products")
+        if cursor.fetchone()[0] == 0:
+            cursor.executemany("INSERT INTO products (name, price, category) VALUES (?, ?, ?)", [
+                ("Milk Chiya", 30, "Tea"),
+                ("Black Chiya", 20, "Tea"),
+                ("Masala Chiya", 40, "Tea"),
+                ("Samosa", 25, "Snacks"),
+                ("Momo (Buff)", 120, "Snacks")
+            ])
+
+        cursor.execute('''CREATE TABLE IF NOT EXISTS ingredients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT, quantity REAL, unit TEXT, min_threshold REAL
+        )''')
+        cursor.execute("SELECT COUNT(*) FROM ingredients")
+        if cursor.fetchone()[0] == 0:
+            cursor.executemany("INSERT INTO ingredients (name, quantity, unit, min_threshold) VALUES (?, ?, ?, ?)", [
+                ("Milk", 10.0, "Liter", 3.0),
+                ("Tea Leaves", 2.5, "KG", 0.5),
+                ("Sugar", 5.0, "KG", 1.0)
+            ])
+
+        cursor.execute('''CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_name TEXT, customer_phone TEXT, customer_address TEXT,
+            order_type TEXT, table_number TEXT, payment_method TEXT,
+            payment_status TEXT, notes TEXT, discount REAL, subtotal REAL,
+            total_price REAL, status TEXT, created_at TEXT, staff_name TEXT
+        )''')
+
+        cursor.execute('''CREATE TABLE IF NOT EXISTS order_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER, product_id INTEGER, product_name TEXT,
+            price REAL, quantity INTEGER
+        )''')
+
+        cursor.execute('''CREATE TABLE IF NOT EXISTS expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT, amount REAL, created_at TEXT
+        )''')
+
+init_user_db()
+init_db()
+
+USERS = {
+    "9999": {"name": "Admin Owner", "role": "Admin"},
+    "1111": {"name": "Staff Ram", "role": "Staff"},
+    "2222": {"name": "Staff Sita", "role": "Staff"}
+}
 
 # ----------------
 # Pydantic Schemas
 # ----------------
+class LoginSchema(BaseModel):
+    username: str
+    password: str
+
+class LoginRequest(BaseModel):
+    pin: str
+
 class SelfOrderCreateSchema(BaseModel):
     customer_name: str
     customer_phone: str
     table_number: str
     notes: Optional[str] = ""
-    items: List[dict]  # [{"product_id": 1, "quantity": 2}]
-
-class LoginRequest(BaseModel):
-    pin: str
+    items: List[dict]
 
 class OrderItemSchema(BaseModel):
     product_id: int
@@ -124,77 +168,31 @@ class ExpenseCreateSchema(BaseModel):
     amount: float
 
 # ----------------
-# DB Initialization
-# ----------------
-def init_db():
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        # Products Table
-        cursor.execute('''CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT, price REAL, category TEXT, is_available INTEGER DEFAULT 1
-        )''')
-        
-        cursor.execute("SELECT COUNT(*) FROM products")
-        if cursor.fetchone()[0] == 0:
-            cursor.executemany("INSERT INTO products (name, price, category) VALUES (?, ?, ?)", [
-                ("Milk Chiya", 30, "Tea"),
-                ("Black Chiya", 20, "Tea"),
-                ("Masala Chiya", 40, "Tea"),
-                ("Samosa", 25, "Snacks"),
-                ("Momo (Buff)", 120, "Snacks")
-            ])
-
-        # Ingredients Table
-        cursor.execute('''CREATE TABLE IF NOT EXISTS ingredients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT, quantity REAL, unit TEXT, min_threshold REAL
-        )''')
-        cursor.execute("SELECT COUNT(*) FROM ingredients")
-        if cursor.fetchone()[0] == 0:
-            cursor.executemany("INSERT INTO ingredients (name, quantity, unit, min_threshold) VALUES (?, ?, ?, ?)", [
-                ("Milk", 10.0, "Liter", 3.0),
-                ("Tea Leaves", 2.5, "KG", 0.5),
-                ("Sugar", 5.0, "KG", 1.0)
-            ])
-
-        # Orders Table
-        cursor.execute('''CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            customer_name TEXT, customer_phone TEXT, customer_address TEXT,
-            order_type TEXT, table_number TEXT, payment_method TEXT,
-            payment_status TEXT, notes TEXT, discount REAL, subtotal REAL,
-            total_price REAL, status TEXT, created_at TEXT, staff_name TEXT
-        )''')
-
-        # Order Items Table
-        cursor.execute('''CREATE TABLE IF NOT EXISTS order_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_id INTEGER, product_id INTEGER, product_name TEXT,
-            price REAL, quantity INTEGER
-        )''')
-
-        # Expenses Table
-        cursor.execute('''CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT, amount REAL, created_at TEXT
-        )''')
-
-init_db()
-
-USERS = {
-    "9999": {"name": "Admin Owner", "role": "Admin"},
-    "1111": {"name": "Staff Ram", "role": "Staff"},
-    "2222": {"name": "Staff Sita", "role": "Staff"}
-}
-
-# ----------------
 # API Endpoints
 # ----------------
 
+@app.get("/")
+def home():
+    return {"message": "Welcome to Chiya Pasal Ultimate API ☕"}
+
+# Login (Username & Password)
+@app.post("/login/user")
+def login_user(req: LoginSchema):
+    hashed_pass = hashlib.sha256(req.password.encode()).hexdigest()
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, role FROM users WHERE username = ? AND password = ?", (req.username, hashed_pass))
+    user = cursor.fetchone()
+    conn.close()
+    
+    if user:
+        return {"status": "success", "user": {"id": user[0], "username": user[1], "role": user[2]}}
+    raise HTTPException(status_code=401, detail="गलत प्रयोगकर्ता वा पासवर्ड!")
+
+# Login (PIN-based)
 @app.post("/login")
-def login(req: LoginRequest):
+@app.post("/api/login")
+def login_pin(req: LoginRequest):
     if req.pin in USERS:
         user = USERS[req.pin]
         return {"status": "success", "name": user["name"], "role": user["role"]}
@@ -240,7 +238,6 @@ def get_stats():
         "top_selling_product": top_selling
     }
 
-# 1. QR Code Self-Order Endpoint
 @app.post("/public/order")
 def create_self_order(req: SelfOrderCreateSchema):
     subtotal = 0.0
@@ -270,7 +267,6 @@ def create_self_order(req: SelfOrderCreateSchema):
             cursor.execute("INSERT INTO order_items (order_id, product_id, product_name, price, quantity) VALUES (?, ?, ?, ?, ?)",
                            (order_id, item[0], item[1], item[2], item[3]))
 
-    # SMS पठाउने
     sms_msg = f"नमस्ते {req.customer_name}! चिया पसलमा तपाईंको अर्डर (Order #{order_id}) प्राप्त भयो। धन्यवाद!"
     send_sms_alert(req.customer_phone, sms_msg)
 
@@ -327,7 +323,6 @@ def get_orders():
 
     return orders
 
-# 2. अर्डर स्टेटस अपडेट Endpoint (SMS सुविधा मिलाइएको)
 @app.put("/orders/{order_id}/status")
 def update_order_status(order_id: int, req: StatusUpdateSchema):
     with get_db() as conn:
@@ -335,7 +330,6 @@ def update_order_status(order_id: int, req: StatusUpdateSchema):
         order_data = cursor.execute("SELECT customer_name, customer_phone FROM orders WHERE id = ?", (order_id,)).fetchone()
         cursor.execute("UPDATE orders SET status = ? WHERE id = ?", (req.status, order_id))
 
-    # अर्डर तयार/सम्पन्न हुँदा ग्राहकलाई स्वचालित SMS पठाउने
     if order_data and order_data["customer_phone"]:
         c_name = order_data["customer_name"]
         c_phone = order_data["customer_phone"]
@@ -429,14 +423,11 @@ def get_category_sales():
             GROUP BY p.category
         """).fetchall()
     return [{"category": r["category"], "total_sales": r["total_sales"]} for r in rows]
-# 📒 उधारो खाता (Khata System) Endpoints
 
 @app.get("/khata")
 def get_udharo_khata():
-    """सबै ग्राहकको बाँकी उधारो (Unpaid Orders) को रिपोर्ट निकाल्ने"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    
     cursor.execute("""
         SELECT customer_name, customer_phone, COUNT(id) as pending_bills, SUM(total_price) as total_due
         FROM orders 
@@ -446,22 +437,17 @@ def get_udharo_khata():
     """)
     rows = cursor.fetchall()
     conn.close()
-    
     return [{"customer_name": r[0], "customer_phone": r[1], "pending_bills": r[2], "total_due": r[3]} for r in rows]
 
 @app.put("/khata/{phone}/clear")
 def clear_udharo(phone: str):
-    """कुनै ग्राहकले उधारो तिरेपछि सबै Unpaid बिललाई Paid बनाउने"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    
-    # उधारो चुक्ता गर्दा Payment Status र Method अपडेट गर्ने
     cursor.execute("""
         UPDATE orders 
         SET payment_status = 'Paid', payment_method = 'Cash (Khata Cleared)'
         WHERE customer_phone = ? AND payment_status = 'Unpaid'
     """, (phone,))
-    
     conn.commit()
     conn.close()
     return {"status": "success", "message": f"{phone} को सम्पूर्ण उधारो चुक्ता भयो!"}
