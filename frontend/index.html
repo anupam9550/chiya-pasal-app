@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="ne">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chiya Pasal - Ultimate Management System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+    /* Thermal Bill Print Design */
+    @media print {
+        body * { visibility: hidden; }
+        #thermal-receipt, #thermal-receipt * { visibility: visible; }
+        #thermal-receipt {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 80mm; /* standard POS receipt width */
+            font-family: monospace;
+            font-size: 12px;
+        }
+    }
+</style>
+</head>
+<body class="bg-gray-100 text-gray-800 font-sans p-4 md:p-6">
+
+    <!-- 🔒 Login Modal -->
+    <div id="login-modal" class="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+        <div class="bg-white p-6 rounded-2xl shadow-2xl w-80 text-center space-y-4">
+            <h2 class="text-xl font-bold text-amber-800">☕ Chiya Pasal Login</h2>
+            <p class="text-xs text-gray-500">तपाईंको Security PIN हान्नुहोस्:</p>
+            <input type="password" id="user-pin" maxlength="4" placeholder="••••" class="w-full text-center text-2xl tracking-widest border-2 border-amber-600 p-2 rounded-lg outline-none">
+            <button onclick="checkLogin()" class="w-full bg-amber-800 text-white font-bold py-2 rounded-lg hover:bg-amber-900 transition">Login गर्नुहोस्</button>
+            <p class="text-[10px] text-gray-400">Admin: 9999 | Ram: 1111 | Sita: 2222</p>
+        </div>
+    </div>
+
+    <!-- Thermal Bill Print Section (Hidden on Screen, Visible on Print) -->
+<div id="thermal-receipt" class="hidden print:block p-2 text-black bg-white">
+    <div class="text-center font-bold text-base border-b pb-1">
+        <h2>☕ CHIYA PASAL</h2>
+        <p class="text-xs font-normal">काठमाडौँ, नेपाल | फोन: ९८XXXXXXXX</p>
+        <p class="text-xs font-normal">VAT / PAN: 600012345</p>
+    </div>
+    
+    <div class="my-2 text-xs border-b pb-1">
+        <p>बिल नं: <span id="r-order-id">#0</span></p>
+        <p>मिती: <span id="r-date">2026-10-01</span></p>
+        <p>ग्राहक: <span id="r-customer">Guest</span></p>
+        <p>टेबल: <span id="r-table">-</span></p>
+    </div>
+
+    <table class="w-full text-left text-xs border-b pb-2 mb-2">
+        <thead>
+            <tr class="border-b">
+                <th>सामान</th>
+                <th>मात्रा</th>
+                <th class="text-right">दर</th>
+                <th class="text-right">जम्मा</th>
+            </tr>
+        </thead>
+        <tbody id="r-items-list">
+            <!-- Order Items dynamically loaded here -->
+        </tbody>
+    </table>
+
+    <div class="text-right text-xs space-y-1 font-bold">
+        <p>सबटोटल: Rs. <span id="r-subtotal">0</span></p>
+        <p>छुट (Discount): Rs. <span id="r-discount">0</span></p>
+        <p class="text-sm">कुल रकम: Rs. <span id="r-total">0</span></p>
+    </div>
+
+    <div class="text-center text-xs mt-4 border-t pt-2 font-semibold">
+        <p>🙏 धन्यवाद! पुनः आउनुहोला। 🙏</p>
+    </div>
+</div>
+
+    <!-- 💳 Dynamic QR Code Modal -->
+    <div id="qr-modal" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 hidden">
+        <div class="bg-white p-6 rounded-2xl shadow-2xl w-80 text-center space-y-4 relative">
+            <button onclick="closeQRModal()" class="absolute top-2 right-3 text-gray-500 font-bold text-lg">✕</button>
+            <h3 class="text-lg font-bold text-amber-800">📱 Scan to Pay</h3>
+            <p id="qr-amount-text" class="text-xl font-extrabold text-green-700">Rs. 0</p>
+            <img id="qr-image" src="" alt="Dynamic QR" class="w-48 h-48 mx-auto border-2 border-amber-500 rounded-lg p-2 bg-white">
+            <p class="text-xs text-gray-500">Fonepay / eSewa / Mobile Banking बाट स्क्यान गर्नुहोस्</p>
+        </div>
+    </div>
+
+    <div class="max-w-7xl mx-auto space-y-6">
+        
+        <!-- Header -->
+        <div class="flex flex-col md:flex-row justify-between items-center bg-amber-800 text-white p-4 rounded-xl shadow-lg gap-4">
+            <div>
+                <h1 class="text-2xl font-bold">☕ चिया पसल (Ultimate Chiya System)</h1>
+                <p class="text-sm text-amber-200">SQLite DB, QR Payment & Sound Alert Enabled</p>
+            </div>
+            
+            <div class="flex flex-wrap items-center gap-2">
+                <span id="logged-user-name" class="text-xs bg-amber-900 px-3 py-2 rounded-full font-semibold"></span>
+                <button onclick="loadAllData()" class="bg-white text-amber-900 px-3 py-2 rounded-lg text-xs font-semibold hover:bg-amber-100 transition">🔄 Refresh</button>
+                <button onclick="toggleKitchenView()" class="bg-amber-900 text-white px-3 py-2 rounded-lg text-xs font-semibold hover:bg-black transition">👨‍🍳 Kitchen View</button>
+                <button onclick="downloadCSVReport()" class="bg-green-600 text-white px-3 py-2 rounded-lg text-xs font-semibold hover:bg-green-700 transition">📊 Excel Report</button>
+                <button onclick="logout()" class="text-xs bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-lg font-bold">Logout 🚪</button>
+            </div>
+        </div>
+
+        <!-- Dashboard Stats -->
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <div class="bg-white p-4 rounded-xl shadow border-l-4 border-amber-500">
+                <p class="text-xs text-gray-500 uppercase font-semibold">आजको अर्डर</p>
+                <h2 id="stat-today-orders" class="text-2xl font-bold text-gray-800">0</h2>
+            </div>
+            <div class="bg-white p-4 rounded-xl shadow border-l-4 border-green-500">
+                <p class="text-xs text-gray-500 uppercase font-semibold">आजको आम्दानी</p>
+                <h2 id="stat-today-revenue" class="text-2xl font-bold text-green-600">Rs. 0</h2>
+            </div>
+            <div class="bg-white p-4 rounded-xl shadow border-l-4 border-yellow-500">
+                <p class="text-xs text-gray-500 uppercase font-semibold">PENDING ORDERS</p>
+                <h2 id="stat-pending-orders" class="text-2xl font-bold text-yellow-600">0</h2>
+            </div>
+            <div class="bg-white p-4 rounded-xl shadow border-l-4 border-purple-500">
+                <p class="text-xs text-gray-500 uppercase font-semibold">धेरै बिक्री भएको</p>
+                <h2 id="stat-top-selling" class="text-base font-bold text-purple-700 mt-1">N/A</h2>
+            </div>
+            <div class="bg-white p-4 rounded-xl shadow border-l-4 border-blue-500">
+                <p class="text-xs text-gray-500 uppercase font-semibold">कुल आम्दानी</p>
+                <h2 id="stat-total-revenue" class="text-2xl font-bold text-blue-600">Rs. 0</h2>
+            </div>
+        </div>
+
+        <!-- Main Layout -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            <!-- Left Side -->
+            <div class="space-y-6">
+                
+                <!-- Table Map -->
+                <div class="bg-white p-4 rounded-xl shadow space-y-3">
+                    <div class="flex justify-between items-center border-b pb-2">
+                        <h2 class="text-base font-bold text-amber-800">🪑 टेबल स्थिति (Table Map)</h2>
+                        <div class="flex gap-2 text-[11px] font-semibold">
+                            <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 bg-green-500 rounded-full inline-block"></span> खाली</span>
+                            <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 bg-red-500 rounded-full inline-block"></span> व्यस्त</span>
+                        </div>
+                    </div>
+                    <div id="table-grid" class="grid grid-cols-4 gap-2"></div>
+                </div>
+
+                <!-- Order Form -->
+                <div class="bg-white p-5 rounded-xl shadow space-y-4">
+                    <h2 class="text-lg font-bold border-b pb-2 text-amber-800">📝 नयाँ अर्डर लिनुहोस्</h2>
+                    
+                    <div class="space-y-3">
+                        <input type="text" id="cust-name" placeholder="ग्राहकको नाम" class="w-full border p-2 rounded text-sm outline-none focus:ring-2 focus:ring-amber-500">
+                        
+                        <div class="space-y-1">
+                            <input type="text" id="cust-phone" oninput="checkLoyalty()" placeholder="फोन नम्बर" class="w-full border p-2 rounded text-sm outline-none focus:ring-2 focus:ring-amber-500">
+                            <div id="loyalty-badge" class="text-xs hidden p-1.5 rounded font-semibold transition"></div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2">
+                            <select id="order-type" onchange="toggleTableAddress()" class="border p-2 rounded text-sm outline-none">
+                                <option value="Dine-in">Dine-in</option>
+                                <option value="Delivery">Delivery</option>
+                            </select>
+                            <input type="text" id="table-number" placeholder="टेबल नं." class="border p-2 rounded text-sm outline-none">
+                        </div>
+
+                        <input type="text" id="cust-address" placeholder="ठेगाना (Delivery को लागि)" class="w-full border p-2 rounded text-sm outline-none hidden">
+
+                        <div class="space-y-1">
+                            <label class="text-xs font-bold text-amber-900">📋 नोट (Special Request):</label>
+                            <input type="text" id="order-notes" placeholder="उदा: कडा चिया, कम चिनी" class="w-full border p-2 rounded text-xs outline-none">
+                        </div>
+
+                        <div class="border-t pt-2">
+                            <p class="text-xs font-bold text-gray-600 mb-2">सामान छान्नुहोस्:</p>
+                            <div id="order-items-select" class="space-y-2 max-h-48 overflow-y-auto pr-1"></div>
+                        </div>
+
+                        <div class="flex items-center justify-between bg-amber-50 p-2 rounded border border-amber-200">
+                            <label class="text-xs font-bold text-amber-900">छुट (Discount Rs.):</label>
+                            <input type="number" id="order-discount" value="0" min="0" oninput="calculateChangeReturn()" class="w-24 border p-1 rounded text-right font-bold text-sm outline-none">
+                        </div>
+
+                        <div class="bg-amber-100/70 p-3 rounded-lg border border-amber-300 space-y-2">
+                            <div class="flex items-center justify-between">
+                                <label class="text-xs font-bold text-amber-900">💵 ग्राहकले दिएको रकम:</label>
+                                <input type="number" id="cash-given" oninput="calculateChangeReturn()" placeholder="Rs. 0" class="w-28 border p-1 rounded text-right font-bold text-sm outline-none bg-white">
+                            </div>
+                            <div class="flex items-center justify-between border-t border-amber-200 pt-1 text-xs font-bold">
+                                <span class="text-gray-700">फिर्ता रकम (Change):</span>
+                                <span id="change-return-amount" class="text-sm font-extrabold text-green-700">Rs. 0</span>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2 bg-gray-50 p-2 rounded border">
+                            <div>
+                                <label class="text-xs font-bold text-gray-600">Method:</label>
+                                <select id="payment-method" class="w-full border p-1 rounded text-xs mt-1">
+                                    <option value="Cash">💵 Cash</option>
+                                    <option value="eSewa">💚 eSewa / Fonepay</option>
+                                    <option value="Khalti">💜 Khalti</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="text-xs font-bold text-gray-600">Status:</label>
+                                <select id="payment-status" class="w-full border p-1 rounded text-xs mt-1">
+                                    <option value="Unpaid">❌ Unpaid</option>
+                                    <option value="Paid">✅ Paid</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="flex gap-2">
+                            <button onclick="showDynamicQR()" class="w-1/3 bg-purple-700 text-white font-bold py-2 rounded-lg hover:bg-purple-800 transition text-xs">
+                                📲 Show QR
+                            </button>
+                            <button onclick="submitOrder()" class="w-2/3 bg-amber-700 text-white font-bold py-2 rounded-lg hover:bg-amber-800 transition text-sm">
+                                अर्डर सबमिट गर्नुहोस्
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <!-- Analytics Chart Section -->
+<div class="bg-white p-5 rounded-xl shadow space-y-3">
+    <h2 class="text-base font-bold text-amber-800">📊 बिक्री विश्लेषण (Category Sales Chart)</h2>
+    <div class="w-full h-64">
+        <canvas id="categoryChart"></canvas>
+    </div>
+</div>
+
+                <!-- Stock Toggle -->
+                <div class="bg-white p-5 rounded-xl shadow space-y-3">
+                    <h2 class="text-lg font-bold border-b pb-2 text-amber-800">🍔 मेन्यु स्टक अवस्था</h2>
+                    <div id="product-list" class="space-y-2 max-h-48 overflow-y-auto"></div>
+                </div>
+
+                <!-- Raw Inventory -->
+                <div class="bg-white p-5 rounded-xl shadow space-y-4">
+                    <h2 class="text-lg font-bold border-b pb-2 text-amber-800">🥛 कच्चा पदार्थ (Raw Inventory)</h2>
+                    <div class="bg-gray-50 p-3 rounded-lg border space-y-2">
+                        <p class="text-xs font-bold text-gray-700">➕ नयाँ सामान जोड्नुहोस्:</p>
+                        <div class="grid grid-cols-2 gap-2">
+                            <input type="text" id="ing-name" placeholder="सामान (उदा: Milk)" class="text-xs border p-2 rounded outline-none">
+                            <input type="number" id="ing-qty" placeholder="परिमाण" class="text-xs border p-2 rounded outline-none">
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <select id="ing-unit" class="text-xs border p-2 rounded outline-none">
+                                <option value="Liter">Liter (L)</option>
+                                <option value="KG">KG</option>
+                                <option value="Pkt">Packet</option>
+                            </select>
+                            <input type="number" id="ing-threshold" placeholder="Alert Limit" class="text-xs border p-2 rounded outline-none">
+                        </div>
+                        <button onclick="addIngredient()" class="w-full bg-amber-800 text-white text-xs font-bold py-2 rounded hover:bg-amber-900">सेभ गर्नुहोस्</button>
+                    </div>
+                    <div id="ingredient-list" class="space-y-2 max-h-36 overflow-y-auto"></div>
+                </div>
+
+                <!-- Expense Tracker -->
+                <div class="bg-white p-5 rounded-xl shadow space-y-4">
+                    <div class="flex justify-between items-center border-b pb-2">
+                        <h2 class="text-lg font-bold text-amber-800">💸 खर्च खाता</h2>
+                        <span id="stat-net-profit" class="text-xs bg-green-100 text-green-800 px-3 py-1 rounded-full font-bold">खुद नाफा: Rs. 0</span>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-2 bg-gray-50 p-2 rounded-lg border">
+                        <input type="text" id="exp-title" placeholder="विवरण" class="text-xs border p-2 rounded outline-none">
+                        <input type="number" id="exp-amount" placeholder="रकम (Rs.)" class="text-xs border p-2 rounded outline-none">
+                        <button onclick="addExpense()" class="bg-red-600 text-white text-xs font-bold py-2 rounded hover:bg-red-700 transition">+ खर्च</button>
+                    </div>
+                    <div id="expense-list" class="space-y-2 max-h-36 overflow-y-auto text-xs"></div>
+                </div>
+
+            </div>
+            <!-- 📒 उधारो खाता (Khata System) -->
+<div class="bg-white p-5 rounded-xl shadow space-y-4 mt-6">
+    <div class="flex justify-between items-center border-b pb-2">
+        <h2 class="text-lg font-bold text-red-700">📒 उधारो खाता (Pending Dues)</h2>
+        <button onclick="fetchKhata()" class="text-xs bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded font-bold">🔄 Refresh</button>
+    </div>
+    <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm border-collapse">
+            <thead>
+                <tr class="bg-red-50 text-red-900 border-b border-red-200">
+                    <th class="p-2">ग्राहकको नाम</th>
+                    <th class="p-2">फोन नम्बर</th>
+                    <th class="p-2">बाँकी बिलहरू</th>
+                    <th class="p-2 text-right">कुल उधारो (Rs.)</th>
+                    <th class="p-2 text-center">एक्सन</th>
+                </tr>
+            </thead>
+            <tbody id="khata-list" class="divide-y">
+                <!-- Data will be loaded here -->
+            </tbody>
+        </table>
+    </div>
+</div>
+
+            <!-- Right Side (Orders List) -->
+            <div class="lg:col-span-2 bg-white p-5 rounded-xl shadow space-y-4">
+                <div class="flex flex-col md:flex-row justify-between items-start md:items-center border-b pb-3 gap-2">
+                    <h2 class="text-lg font-bold text-amber-800">📋 सबै अर्डरहरू</h2>
+                    <div class="flex flex-wrap gap-2 w-full md:w-auto">
+                        <input type="text" id="search-input" onkeyup="filterAndRenderOrders()" placeholder="नाम वा फोन खोज्नुहोस्..." class="border text-xs p-2 rounded w-full md:w-48 outline-none focus:ring-1 focus:ring-amber-500">
+                        <select id="filter-status" onchange="filterAndRenderOrders()" class="border text-xs p-2 rounded outline-none">
+                            <option value="All">सबै Status</option>
+                            <option value="Pending">Pending</option>
+                            <option value="Preparing">Preparing</option>
+                            <option value="Completed">Completed</option>
+                            <option value="Cancelled">Cancelled</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div id="orders-list" class="space-y-4 max-h-[800px] overflow-y-auto pr-2"></div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- JavaScript Logic -->
+    <script>
+        const API_BASE = "http://127.0.0.1:8000";
+        let productsCache = [];
+        let allOrdersCache = [];
+        let currentUserRole = null;
+        let currentUserName = "Admin";
+        let lastOrderCount = 0;
+        const ALL_TABLES = ["1", "2", "3", "4", "5", "6", "7", "8"];
+
+        document.addEventListener("DOMContentLoaded", () => {
+            loadAllData();
+            // Polling interval for live sync sound
+            setInterval(fetchOrdersSilent, 5000);
+        });
+
+        function playBeepSound() {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                osc.type = "sine";
+                osc.frequency.setValueAtTime(800, ctx.currentTime);
+                osc.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.3);
+            } catch(e) {}
+        }
+
+        function loadAllData() {
+            fetchStats();
+            fetchProducts();
+            fetchOrders();
+            fetchIngredients();
+            fetchExpenses();
+        }
+
+        async function fetchOrdersSilent() {
+            try {
+                const res = await fetch(`${API_BASE}/orders`);
+                const orders = await res.json();
+                if (lastOrderCount > 0 && orders.length > lastOrderCount) {
+                    playBeepSound();
+                }
+                lastOrderCount = orders.length;
+                allOrdersCache = orders;
+                filterAndRenderOrders();
+            } catch(e) {}
+        }
+
+        function toggleTableAddress() {
+            const type = document.getElementById("order-type").value;
+            if (type === "Delivery") {
+                document.getElementById("cust-address").classList.remove("hidden");
+                document.getElementById("table-number").classList.add("hidden");
+            } else {
+                document.getElementById("cust-address").classList.add("hidden");
+                document.getElementById("table-number").classList.remove("hidden");
+            }
+        }
+
+        async function fetchStats() {
+            try {
+                const res = await fetch(`${API_BASE}/stats`);
+                const data = await res.json();
+                document.getElementById("stat-today-orders").innerText = data.today_orders || 0;
+                document.getElementById("stat-today-revenue").innerText = `Rs. ${data.today_revenue || 0}`;
+                document.getElementById("stat-pending-orders").innerText = data.pending_orders || 0;
+                document.getElementById("stat-total-revenue").innerText = `Rs. ${data.total_revenue || 0}`;
+                document.getElementById("stat-top-selling").innerText = data.top_selling_product || "N/A";
+            } catch (err) { console.error("Error stats:", err); }
+        }
+
+        async function fetchProducts() {
+            try {
+                const res = await fetch(`${API_BASE}/products`);
+                productsCache = await res.json();
+                
+                const orderSelectDiv = document.getElementById("order-items-select");
+                const productListDiv = document.getElementById("product-list");
+                
+                orderSelectDiv.innerHTML = "";
+                productListDiv.innerHTML = "";
+
+                productsCache.forEach(prod => {
+                    if (prod.is_available) {
+                        orderSelectDiv.innerHTML += `
+                            <div class="flex items-center justify-between text-sm bg-gray-50 p-2 rounded border">
+                                <div><span class="font-medium">${prod.name}</span> <span class="text-xs text-gray-500">(Rs. ${prod.price})</span></div>
+                                <input type="number" id="qty-${prod.id}" min="0" value="0" onchange="calculateChangeReturn()" class="w-16 border rounded p-1 text-center font-bold">
+                            </div>`;
+                    }
+                    productListDiv.innerHTML += `
+                        <div class="flex items-center justify-between p-2 border-b text-sm">
+                            <div>
+                                <p class="font-semibold ${!prod.is_available ? 'line-through text-gray-400' : ''}">${prod.name}</p>
+                                <p class="text-xs text-gray-500">Rs. ${prod.price} | ${prod.category}</p>
+                            </div>
+                            <button onclick="toggleAvailability(${prod.id})" class="px-2 py-1 text-xs font-bold rounded ${prod.is_available ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">
+                                ${prod.is_available ? 'In Stock ✅' : 'Out of Stock 🚫'}
+                            </button>
+                        </div>`;
+                });
+            } catch (err) { console.error("Error products:", err); }
+        }
+
+        async function toggleAvailability(id) {
+            await fetch(`${API_BASE}/products/${id}/toggle`, { method: "PUT" });
+            fetchProducts();
+        }
+
+        function getCurrentTotal() {
+            let subtotal = 0;
+            productsCache.forEach(prod => {
+                const qtyInput = document.getElementById(`qty-${prod.id}`);
+                if (qtyInput) subtotal += prod.price * (parseInt(qtyInput.value) || 0);
+            });
+            const discount = parseFloat(document.getElementById("order-discount")?.value) || 0;
+            return Math.max(0, subtotal - discount);
+        }
+
+        function showDynamicQR() {
+            const amount = getCurrentTotal();
+            if (amount <= 0) return alert("कृपया सामान छान्नुहोस्!");
+            document.getElementById("qr-amount-text").innerText = `Rs. ${amount}`;
+            document.getElementById("qr-image").src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=ChiyaPasal_Payment_Rs_${amount}`;
+            document.getElementById("qr-modal").classList.remove("hidden");
+        }
+
+        function closeQRModal() { document.getElementById("qr-modal").classList.add("hidden"); }
+
+        async function submitOrder() {
+            const name = document.getElementById("cust-name").value;
+            const phone = document.getElementById("cust-phone").value;
+            const orderType = document.getElementById("order-type").value;
+            const tableNumber = document.getElementById("table-number").value;
+            const address = document.getElementById("cust-address").value;
+            const paymentMethod = document.getElementById("payment-method").value;
+            const paymentStatus = document.getElementById("payment-status").value;
+            const notes = document.getElementById("order-notes").value;
+            const discount = parseFloat(document.getElementById("order-discount").value) || 0;
+
+            if (!name || !phone) return alert("कृपया ग्राहकको नाम र फोन भर्नुहोस्!");
+
+            const items = [];
+            productsCache.forEach(prod => {
+                const qtyInput = document.getElementById(`qty-${prod.id}`);
+                if (qtyInput && parseInt(qtyInput.value) > 0) {
+                    items.push({ product_id: prod.id, quantity: parseInt(qtyInput.value) });
+                }
+            });
+
+            if (items.length === 0) return alert("कृपया कम्तीमा एउटा सामान छान्नुहोस्!");
+
+            const payload = {
+                customer_name: name, customer_phone: phone, customer_address: orderType === "Delivery" ? address : "",
+                order_type: orderType, table_number: orderType === "Dine-in" ? tableNumber : "",
+                payment_method: paymentMethod, payment_status: paymentStatus, notes: notes, discount: discount,
+                staff_name: currentUserName, items: items
+            };
+
+            const res = await fetch(`${API_BASE}/orders`, {
+                method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+            });
+
+            if (res.ok) {
+                playBeepSound();
+                alert("अर्डर सफल भयो!");
+                document.getElementById("cust-name").value = "";
+                document.getElementById("cust-phone").value = "";
+                document.getElementById("table-number").value = "";
+                document.getElementById("cust-address").value = "";
+                document.getElementById("order-notes").value = "";
+                document.getElementById("cash-given").value = "";
+                document.getElementById("order-discount").value = "0";
+                loadAllData();
+            } else { alert("अर्डर असफल भयो!"); }
+        }
+
+        async function fetchOrders() {
+            try {
+                const res = await fetch(`${API_BASE}/orders`);
+                allOrdersCache = await res.json();
+                lastOrderCount = allOrdersCache.length;
+                filterAndRenderOrders();
+            } catch (err) { console.error("Error orders:", err); }
+        }
+
+        function filterAndRenderOrders() {
+            const searchText = document.getElementById("search-input").value.toLowerCase();
+            const filterStatus = document.getElementById("filter-status").value;
+
+            const filtered = allOrdersCache.filter(order => {
+                const matchesSearch = (order.customer_name && order.customer_name.toLowerCase().includes(searchText)) || 
+                                      (order.customer_phone && order.customer_phone.includes(searchText)) ||
+                                      (order.id && order.id.toString().includes(searchText));
+                const matchesStatus = filterStatus === "All" || order.status === filterStatus;
+                return matchesSearch && matchesStatus;
+            });
+
+            renderOrdersList(filtered);
+            renderTableMap();
+        }
+
+        function renderOrdersList(orders) {
+            const container = document.getElementById("orders-list");
+            container.innerHTML = "";
+            if (orders.length === 0) {
+                container.innerHTML = `<p class="text-center text-gray-400 py-8">कुनै अर्डर भेटिएन।</p>`;
+                return;
+            }
+
+            orders.forEach(order => {
+                const itemsHtml = order.items.map(i => `<li>${i.product_name} x ${i.quantity} (Rs. ${i.price * i.quantity})</li>`).join("");
+                const payBadge = order.payment_status === "Paid" ? `<span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded font-bold">Paid ✅</span>` : `<span class="bg-red-100 text-red-700 text-xs px-2 py-0.5 rounded font-bold">Unpaid ❌</span>`;
+                const locationInfo = order.order_type === "Dine-in" ? `Dine-in ${order.table_number ? `(टेबल: ${order.table_number})` : ''}` : `Delivery ${order.customer_address ? `(${order.customer_address})` : ''}`;
+
+                container.innerHTML += `
+                    <div class="border rounded-xl p-4 bg-gray-50 hover:bg-white transition shadow-sm space-y-2">
+                        <div class="flex justify-between items-start border-b pb-2">
+                            <div>
+                                <h3 class="font-bold text-gray-800">Order #${order.id} - ${order.customer_name} (${order.customer_phone})</h3>
+                                <p class="text-xs text-gray-500">⏰ ${order.created_at || ''} | 👤 Staff: ${order.staff_name || 'Admin'}</p>
+                                <p class="text-xs text-amber-700 font-semibold mt-1">📍 ${locationInfo}</p>
+                                ${order.notes ? `<p class="text-xs bg-amber-100 text-amber-900 p-1 rounded mt-1 font-medium">📝 Note: ${order.notes}</p>` : ''}
+                            </div>
+                            <div class="text-right">
+                                <span class="text-lg font-bold text-amber-800">Rs. ${order.total_price}</span>
+                                <div class="mt-1">${payBadge} <span class="text-xs font-semibold text-gray-600">(${order.payment_method})</span></div>
+                            </div>
+                        </div>
+                        <div class="text-sm">
+                            <p class="font-semibold text-gray-700">सामानहरू:</p>
+                            <ul class="list-disc list-inside text-xs text-gray-600">${itemsHtml}</ul>
+                        </div>
+                        <div class="flex flex-wrap items-center justify-between border-t pt-2 gap-2">
+                            <div class="flex items-center gap-2">
+                                <label class="text-xs font-bold text-gray-600">Status:</label>
+                                <select onchange="updateOrderStatus(${order.id}, this.value)" class="text-xs border p-1 rounded font-semibold bg-white">
+                                    <option value="Pending" ${order.status === 'Pending' ? 'selected' : ''}>Pending</option>
+                                    <option value="Preparing" ${order.status === 'Preparing' ? 'selected' : ''}>Preparing</option>
+                                    <option value="Completed" ${order.status === 'Completed' ? 'selected' : ''}>Completed</option>
+                                    <option value="Cancelled" ${order.status === 'Cancelled' ? 'selected' : ''}>Cancelled</option>
+                                </select>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button onclick="togglePaymentStatus(${order.id}, '${order.payment_status}')" class="text-xs bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded font-semibold">${order.payment_status === 'Paid' ? 'Mark Unpaid' : 'Mark Paid ✅'}</button>
+                                <button onclick="printThermalBill(${order.id})" class="text-xs bg-amber-700 text-white hover:bg-amber-800 px-3 py-1 rounded font-semibold">🖨️ POS Thermal Print</button>
+                                <button onclick="sendWhatsAppReceipt(${order.id})" class="text-xs bg-green-600 text-white hover:bg-green-700 px-3 py-1 rounded font-semibold">💬 WhatsApp</button>
+                            </div>
+                        </div>
+                    </div>`;
+            });
+        }
+
+        async function updateOrderStatus(orderId, newStatus) {
+            await fetch(`${API_BASE}/orders/${orderId}/status`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: newStatus }) });
+            loadAllData();
+        }
+
+        async function togglePaymentStatus(orderId, currentStatus) {
+            const nextStatus = currentStatus === "Paid" ? "Unpaid" : "Paid";
+            await fetch(`${API_BASE}/orders/${orderId}/payment`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ payment_status: nextStatus }) });
+            loadAllData();
+        }
+
+        function printThermalBill(orderId) {
+            const order = allOrdersCache.find(o => o.id === orderId);
+            if (!order) return;
+            const printWindow = window.open('', '_blank', 'width=320,height=500');
+            const itemsRows = order.items.map(i => `<div style="display:flex; justify-content:space-between; font-size:11px;"><span>${i.product_name} x${i.quantity}</span><span>${i.price * i.quantity}</span></div>`).join('');
+            printWindow.document.write(`
+                <html>
+                <head>
+                    <title>Thermal Bill #${order.id}</title>
+                    <style>
+                        @page { size: 80mm auto; margin: 0; }
+                        body { font-family: 'Courier New', monospace; width: 72mm; margin: 0 auto; padding: 5px; }
+                        .text-center { text-align: center; }
+                        .line { border-top: 1px dashed #000; margin: 5px 0; }
+                        .flex { display: flex; justify-space-between; }
+                        .bold { font-weight: bold; }
+                    </style>
+                </head>
+                <body>
+                    <div class="text-center">
+                        <h3 style="margin:0;">☕ CHIYA PASAL</h3>
+                        <p style="margin:2px 0; font-size:10px;">Kathmandu, Nepal</p>
+                    </div>
+                    <div class="line"></div>
+                    <div style="font-size:10px;">
+                        <p style="margin:2px 0;">Bill #${order.id} | ${order.created_at}</p>
+                        <p style="margin:2px 0;">Name: ${order.customer_name} (${order.customer_phone})</p>
+                        <p style="margin:2px 0;">Staff: ${order.staff_name || 'Admin'}</p>
+                    </div>
+                    <div class="line"></div>
+                    ${itemsRows}
+                    <div class="line"></div>
+                    <div class="flex bold" style="font-size:12px;"><span>TOTAL:</span><span>Rs. ${order.total_price}</span></div>
+                    <div style="font-size:10px; margin-top:2px;">Method: ${order.payment_method} (${order.payment_status})</div>
+                    <div class="line"></div>
+                    <div class="text-center" style="font-size:10px;"><p>Thank you! Visit Again 🙏</p></div>
+                </body>
+                </html>`);
+            printWindow.document.close();
+            printWindow.focus();
+            setTimeout(() => { printWindow.print(); printWindow.close(); }, 250);
+        }
+
+        function sendWhatsAppReceipt(orderId) {
+            const order = allOrdersCache.find(o => o.id === orderId);
+            if (!order || !order.customer_phone) return alert("फोन भेटिएन!");
+            let phone = order.customer_phone.replace(/\D/g, '');
+            if (phone.length === 10) phone = "977" + phone;
+            let itemsList = order.items.map(i => `• ${i.product_name} x ${i.quantity} = Rs. ${i.price * i.quantity}`).join('\n');
+            let message = `☕ *चिया पसल - बिल* ☕\nReceipt #${order.id}\nCustomer: ${order.customer_name}\n${itemsList}\n*Total: Rs. ${order.total_price}*`;
+            window.open(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`, '_blank');
+        }
+
+        function downloadCSVReport() { window.open(`${API_BASE}/export/orders-csv`, '_blank'); }
+
+        function toggleKitchenView() {
+            let kdsWindow = window.open('', '_blank', 'width=1000,height=700');
+            const kitchenOrders = allOrdersCache.filter(o => o.status === 'Pending' || o.status === 'Preparing');
+            let ordersCards = kitchenOrders.map(o => `
+                <div style="border:2px solid ${o.status === 'Pending' ? '#ef4444' : '#f59e0b'}; background:#fff; padding:15px; border-radius:12px;">
+                    <h2>#Order ${o.id} (${o.order_type})</h2>
+                    <p>Customer: ${o.customer_name} ${o.table_number ? `| Table: ${o.table_number}` : ''}</p>
+                    ${o.notes ? `<p style="background:#fffbeb; padding:4px; font-weight:bold;">📝 Note: ${o.notes}</p>` : ''}
+                    <ul>${o.items.map(i => `<li>${i.product_name} x${i.quantity}</li>`).join('')}</ul>
+                    <button onclick="window.opener.updateOrderStatus(${o.id}, '${o.status === 'Pending' ? 'Preparing' : 'Completed'}'); location.reload();" style="width:100%; padding:8px; background:#d97706; color:white; font-bold;">Next Status</button>
+                </div>`).join('');
+            kdsWindow.document.write(`<html><head><title>KDS View</title><meta http-equiv="refresh" content="10"><style>body{font-family:sans-serif;background:#f3f4f6;padding:20px;}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px;}</style></head><body><h1 style="text-align:center;">👨‍🍳 Kitchen View (KDS)</h1><div class="grid">${ordersCards || '<p>कुनै अर्डर छैन।</p>'}</div></body></html>`);
+        }
+
+        async function checkLogin() {
+            const pin = document.getElementById("user-pin").value;
+            try {
+                const res = await fetch(`${API_BASE}/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: pin }) });
+                const data = await res.json();
+                if (data.status === "success") {
+                    currentUserRole = data.role;
+                    currentUserName = data.name;
+                    document.getElementById("login-modal").classList.add("hidden");
+                    document.getElementById("logged-user-name").innerText = `👤 ${data.name} (${data.role})`;
+                    applyRolePermissions();
+                    loadAllData();
+                } else alert(data.detail || "गलत PIN");
+            } catch (err) { alert("Server Connect हुन सकेन!"); }
+        }
+
+        function applyRolePermissions() {
+            if (currentUserRole === "Staff") {
+                document.getElementById("stat-today-revenue").parentElement.classList.add("hidden");
+                document.getElementById("stat-total-revenue").parentElement.classList.add("hidden");
+                const excelBtn = document.querySelector("button[onclick='downloadCSVReport()']");
+                if(excelBtn) excelBtn.classList.add("hidden");
+            }
+        }
+
+        function logout() { location.reload(); }
+
+        async function fetchIngredients() {
+            try {
+                const res = await fetch(`${API_BASE}/ingredients`);
+                const ingredients = await res.json();
+                const listDiv = document.getElementById("ingredient-list");
+                listDiv.innerHTML = "";
+                ingredients.forEach(item => {
+                    const isLow = item.quantity <= item.min_threshold;
+                    listDiv.innerHTML += `
+                        <div class="flex items-center justify-between p-2 border-b text-xs ${isLow ? 'bg-red-100 font-bold text-red-800' : ''}">
+                            <div><span>${item.name}</span> <span class="text-gray-500">(${item.quantity} ${item.unit})</span> ${isLow ? '⚠️ Low Stock' : ''}</div>
+                            <button onclick="restockItem(${item.id})" class="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-bold">+ थप्नुहोस्</button>
+                        </div>`;
+                });
+            } catch (err) { console.error("Error ingredients:", err); }
+        }
+
+        async function addIngredient() {
+            const name = document.getElementById("ing-name").value;
+            const qty = parseFloat(document.getElementById("ing-qty").value);
+            const unit = document.getElementById("ing-unit").value;
+            const threshold = parseFloat(document.getElementById("ing-threshold").value) || 2.0;
+
+            if (!name || isNaN(qty)) return alert("विवरण भर्नुहोस्!");
+            await fetch(`${API_BASE}/ingredients`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, quantity: qty, unit, min_threshold: threshold }) });
+            document.getElementById("ing-name").value = "";
+            document.getElementById("ing-qty").value = "";
+            fetchIngredients();
+        }
+
+        async function restockItem(id) {
+            const addQty = prompt("कति परिमाण थप्ने?");
+            if (addQty && !isNaN(addQty)) {
+                await fetch(`${API_BASE}/ingredients/${id}/restock?added_qty=${addQty}`, { method: "PUT" });
+                fetchIngredients();
+            }
+        }
+
+        function renderTableMap() {
+            const gridDiv = document.getElementById("table-grid");
+            if (!gridDiv) return;
+            const activeOrders = allOrdersCache.filter(o => o.order_type === "Dine-in" && (o.status === "Pending" || o.status === "Preparing"));
+            const occupiedTables = activeOrders.map(o => String(o.table_number).trim());
+
+            gridDiv.innerHTML = "";
+            ALL_TABLES.forEach(tNo => {
+                const isOccupied = occupiedTables.includes(tNo);
+                gridDiv.innerHTML += `
+                    <button onclick="selectTable('${tNo}')" class="p-2 rounded-lg border text-center transition flex flex-col items-center justify-center ${isOccupied ? 'bg-red-100 text-red-700 font-bold' : 'bg-green-50 text-green-700 font-semibold'}">
+                        <span class="text-xs">टेबल ${tNo}</span>
+                        <span class="text-[9px] mt-0.5">${isOccupied ? '🔴 व्यस्त' : '🟢 खाली'}</span>
+                    </button>`;
+            });
+        }
+
+        function selectTable(tNo) {
+            document.getElementById("order-type").value = "Dine-in";
+            toggleTableAddress();
+            document.getElementById("table-number").value = tNo;
+        }
+
+        async function checkLoyalty() {
+            const phone = document.getElementById("cust-phone").value.trim();
+            const badge = document.getElementById("loyalty-badge");
+            if (phone.length < 10) return badge.classList.add("hidden");
+
+            try {
+                const res = await fetch(`${API_BASE}/customers/${phone}`);
+                const data = await res.json();
+                badge.innerText = data.message;
+                badge.classList.remove("hidden");
+                badge.className = data.discount_percent > 0 ? "text-xs font-bold text-green-800 bg-green-100 p-1.5 rounded border border-green-300" : "text-xs font-semibold text-amber-900 bg-amber-50 p-1.5 rounded border border-amber-200";
+            } catch (err) { console.error("Loyalty error:", err); }
+        }
+
+        async function fetchExpenses() {
+            try {
+                const res = await fetch(`${API_BASE}/expenses`);
+                const expenses = await res.json();
+                const listDiv = document.getElementById("expense-list");
+                if (!listDiv) return;
+
+                listDiv.innerHTML = "";
+                let totalExpense = 0;
+                expenses.forEach(exp => {
+                    totalExpense += exp.amount;
+                    listDiv.innerHTML += `
+                        <div class="flex justify-between items-center p-2 bg-gray-50 rounded border">
+                            <span>${exp.title}</span>
+                            <div class="flex items-center gap-2">
+                                <span class="font-bold text-red-600">Rs. ${exp.amount}</span>
+                                <button onclick="deleteExpense(${exp.id})" class="text-red-500 font-bold">✕</button>
+                            </div>
+                        </div>`;
+                });
+                calculateNetProfit(totalExpense);
+            } catch (err) { console.error("Expense error:", err); }
+        }
+
+        async function addExpense() {
+            const title = document.getElementById("exp-title").value;
+            const amount = parseFloat(document.getElementById("exp-amount").value);
+            if (!title || isNaN(amount)) return alert("विवरण भर्नुहोस्!");
+            await fetch(`${API_BASE}/expenses`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title, amount }) });
+            document.getElementById("exp-title").value = "";
+            document.getElementById("exp-amount").value = "";
+            fetchExpenses();
+        }
+
+        async function deleteExpense(id) {
+            if (confirm("के हटाउन चाहनुहुन्छ?")) {
+                await fetch(`${API_BASE}/expenses/${id}`, { method: "DELETE" });
+                fetchExpenses();
+            }
+        }
+
+        function calculateNetProfit(totalExpense) {
+            const totalRevenue = allOrdersCache.filter(o => o.payment_status === "Paid").reduce((sum, o) => sum + o.total_price, 0);
+            const netProfit = totalRevenue - totalExpense;
+            const profitElem = document.getElementById("stat-net-profit");
+            if (profitElem) {
+                profitElem.innerText = `खुद नाफा: Rs. ${netProfit}`;
+                profitElem.className = `text-xs px-3 py-1 rounded-full font-bold ${netProfit >= 0 ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`;
+            }
+        }
+
+        function calculateChangeReturn() {
+            let totalAmount = 0;
+            productsCache.forEach(prod => {
+                const qtyInput = document.getElementById(`qty-${prod.id}`);
+                if (qtyInput) totalAmount += prod.price * (parseInt(qtyInput.value) || 0);
+            });
+
+            const discount = parseFloat(document.getElementById("order-discount")?.value) || 0;
+            const finalBillAmount = Math.max(0, totalAmount - discount);
+            const cashGiven = parseFloat(document.getElementById("cash-given")?.value) || 0;
+            const changeReturn = cashGiven - finalBillAmount;
+            const returnElem = document.getElementById("change-return-amount");
+
+            if (returnElem) {
+                if (cashGiven === 0) {
+                    returnElem.innerText = `Rs. 0`;
+                    returnElem.className = "text-sm font-extrabold text-green-700";
+                } else if (changeReturn >= 0) {
+                    returnElem.innerText = `Rs. ${changeReturn}`;
+                    returnElem.className = "text-sm font-extrabold text-green-700";
+                } else {
+                    returnElem.innerText = `अझै Rs. ${Math.abs(changeReturn)} पुगेन ⚠`;
+                    returnElem.className = "text-sm font-extrabold text-red-600";
+                }
+            }
+        }
+        let myCategoryChart = null;
+
+async function renderCategoryChart() {
+    try {
+        const res = await fetch(`${API_BASE}/stats/category-sales`);
+        const data = await res.json();
+        
+        const labels = data.map(item => item.category);
+        const totals = data.map(item => item.total_sales);
+
+        const ctx = document.getElementById('categoryChart').getContext('2d');
+        
+        if (myCategoryChart) {
+            myCategoryChart.destroy();
+        }
+
+        myCategoryChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'कुल बिक्री (Rs.)',
+                    data: totals,
+                    backgroundColor: ['#d97706', '#059669', '#2563eb', '#9333ea'],
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { beginAtZero: true }
+                }
+            }
+        });
+    } catch (err) { console.error("Chart Error:", err); }
+}
+
+// loadAllData() भित्र renderCategoryChart() लाई कल गर्नुहोस्।
+   
+   // उधारो खाताको डेटा तान्ने फङ्सन
+async function fetchKhata() {
+    try {
+        const res = await fetch(`${API_BASE}/khata`);
+        const khataData = await res.json();
+        const khataList = document.getElementById("khata-list");
+        
+        if (!khataList) return;
+        khataList.innerHTML = "";
+
+        if (khataData.length === 0) {
+            khataList.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-gray-500 font-bold">🎉 कुनै उधारो बाँकी छैन!</td></tr>`;
+            return;
+        }
+
+        khataData.forEach(k => {
+            khataList.innerHTML += `
+                <tr class="hover:bg-gray-50 transition">
+                    <td class="p-2 font-bold text-gray-800">${k.customer_name}</td>
+                    <td class="p-2 text-gray-600">${k.customer_phone}</td>
+                    <td class="p-2 text-amber-700 font-semibold">${k.pending_bills} वटा बिल</td>
+                    <td class="p-2 text-right font-extrabold text-red-600">Rs. ${k.total_due}</td>
+                    <td class="p-2 text-center">
+                        <button onclick="clearKhata('${k.customer_phone}', '${k.customer_name}', ${k.total_due})" 
+                                class="bg-green-600 hover:bg-green-700 text-white text-xs font-bold px-3 py-1.5 rounded">
+                            💰 पैसा प्राप्त भयो (Clear)
+                        </button>
+                    </td>
+                </tr>`;
+        });
+    } catch (err) {
+        console.error("Khata error:", err);
+    }
+}
+
+// उधारो चुक्ता गर्ने फङ्सन
+async function clearKhata(phone, name, amount) {
+    const confirmClear = confirm(`के ${name} ले Rs. ${amount} को सम्पूर्ण उधारो तिर्नुभयो?`);
+    if (confirmClear) {
+        try {
+            await fetch(`${API_BASE}/khata/${phone}/clear`, { method: "PUT" });
+            alert(`✅ ${name} को सम्पूर्ण उधारो हिसाब मिल्यो!`);
+            fetchKhata(); // Refresh Khata Table
+            loadAllData(); // Refresh overall stats and orders
+        } catch (err) {
+            alert("Error clearing khata!");
+        }
+    }
+}
+
+// सिस्टम खुल्ने बित्तिकै Khata पनि लोड गराउन
+// loadAllData() फङ्सन भित्र fetchKhata(); थप्न नबिर्सनुहोला।
+async function printThermalReceipt(orderId) {
+    try {
+        const res = await fetch(`${API_BASE}/orders/${orderId}`);
+        const order = await res.json();
+
+        document.getElementById("r-order-id").innerText = `#${order.id}`;
+        document.getElementById("r-date").innerText = order.created_at;
+        document.getElementById("r-customer").innerText = order.customer_name || "Guest";
+        document.getElementById("r-table").innerText = order.table_number || "Takeaway";
+
+        const itemsBody = document.getElementById("r-items-list");
+        itemsBody.innerHTML = "";
+
+        order.items.forEach(item => {
+            itemsBody.innerHTML += `
+                <tr>
+                    <td>${item.product_name}</td>
+                    <td>${item.quantity}</td>
+                    <td class="text-right">${item.price}</td>
+                    <td class="text-right">${item.quantity * item.price}</td>
+                </tr>`;
+        });
+
+        document.getElementById("r-subtotal").innerText = order.subtotal;
+        document.getElementById("r-discount").innerText = order.discount;
+        document.getElementById("r-total").innerText = order.total_price;
+
+        // Print dialog खोल्ने
+        window.print();
+    } catch (e) {
+        alert("बिल प्रिन्ट गर्न सकिएन!");
+    }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+Frontend र Backend छुट्टाछुट्टै terminal मा चलाउनुहोस्।
+
+Terminal 1 — Backend:
+
+cd C:\Users\250025\Documents\chiya-pasal\backend
+.\venv\Scripts\Activate.ps1
+uvicorn main:app --reload
+
+Terminal 2 — Frontend:
+
+cd C:\Users\250025\Documents\chiya-pasal\frontend
+npm run dev
