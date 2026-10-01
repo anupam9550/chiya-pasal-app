@@ -1,22 +1,15 @@
-import hashlib
+from fastapi import FastAPI, HTTPException, Response, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional
+import sqlite3
 import csv
 import io
-import sqlite3
 from datetime import datetime
-from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-
-# १. मुख्य Configuration र Database File Name
-DB_FILE = "chiya_pasal.db"
-
-# २. FastAPI App र CORS Setup
 app = FastAPI(title="Anupam Chiya Pasal API")
 
-# CORS Setup (Vercel Frontend को लागि)
+# フロントエンドからのリクエストを許可するCORS設定
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,121 +18,116 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ----------------
-# Helper Functions
-# ----------------
-def get_db():
-    conn = sqlite3.connect(DB_FILE, timeout=10.0)
-    conn.row_factory = sqlite3.Row
-    return conn
+DB_NAME = "chiya_pasal.db"
 
-def send_sms_alert(mobile_number: str, message: str):
-    print(f"📱 [SMS Sent to {mobile_number}]: {message}")
-
-# ----------------
-# Database Init
-# ----------------
-def init_user_db():
-    conn = sqlite3.connect(DB_FILE)
+# --- データベース初期化 ---
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
+    
+    # 商品テーブル
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            role TEXT NOT NULL
+            name TEXT NOT NULL,
+            price REAL NOT NULL,
+            category TEXT NOT NULL,
+            is_available INTEGER DEFAULT 1
         )
-    """)
-    cursor.execute("SELECT * FROM users WHERE username = 'admin'")
-    if not cursor.fetchone():
-        admin_pass = hashlib.sha256("admin123".encode()).hexdigest()
-        staff_pass = hashlib.sha256("staff123".encode()).hexdigest()
-        cursor.execute("INSERT INTO users (username, password, role) VALUES ('admin', ?, 'Admin')", (admin_pass,))
-        cursor.execute("INSERT INTO users (username, password, role) VALUES ('staff', ?, 'Staff')", (staff_pass,))
+    ''')
+    
+    # 注文テーブル
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_name TEXT,
+            customer_phone TEXT,
+            customer_address TEXT,
+            order_type TEXT,
+            table_number TEXT,
+            payment_method TEXT,
+            payment_status TEXT,
+            notes TEXT,
+            discount REAL DEFAULT 0,
+            staff_name TEXT,
+            subtotal REAL DEFAULT 0,
+            total_price REAL DEFAULT 0,
+            status TEXT DEFAULT 'Pending',
+            created_at TEXT
+        )
+    ''')
+    
+    # 注文明細テーブル
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS order_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER,
+            product_id INTEGER,
+            product_name TEXT,
+            quantity INTEGER,
+            price REAL,
+            FOREIGN KEY (order_id) REFERENCES orders(id)
+        )
+    ''')
+    
+    # 原材料在庫テーブル
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ingredients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            unit TEXT NOT NULL,
+            min_threshold REAL DEFAULT 2.0
+        )
+    ''')
+    
+    # 経費テーブル
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            amount REAL NOT NULL,
+            created_at TEXT
+        )
+    ''')
+    
+    # 初期データ（サンプルメニュー）の挿入
+    cursor.execute("SELECT COUNT(*) FROM products")
+    if cursor.fetchone()[0] == 0:
+        sample_products = [
+            ("Milk Tea", 25.0, "Tea", 1),
+            ("Black Tea", 15.0, "Tea", 1),
+            ("Masala Tea", 30.0, "Tea", 1),
+            ("Coffee", 50.0, "Beverage", 1),
+            ("Samosa", 25.0, "Snacks", 1),
+            ("Pakoda", 40.0, "Snacks", 1)
+        ]
+        cursor.executemany("INSERT INTO products (name, price, category, is_available) VALUES (?, ?, ?, ?)", sample_products)
+
+    # 初期データ（サンプル原材料）の挿入
+    cursor.execute("SELECT COUNT(*) FROM ingredients")
+    if cursor.fetchone()[0] == 0:
+        sample_ingredients = [
+            ("Milk", 10.0, "Liter", 3.0),
+            ("Tea Powder", 5.0, "KG", 1.0),
+            ("Sugar", 8.0, "KG", 2.0)
+        ]
+        cursor.executemany("INSERT INTO ingredients (name, quantity, unit, min_threshold) VALUES (?, ?, ?, ?)", sample_ingredients)
+
     conn.commit()
     conn.close()
 
-def init_db():
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        cursor.execute('''CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT, price REAL, category TEXT, is_available INTEGER DEFAULT 1
-        )''')
-        
-        cursor.execute("SELECT COUNT(*) FROM products")
-        if cursor.fetchone()[0] == 0:
-            cursor.executemany("INSERT INTO products (name, price, category) VALUES (?, ?, ?)", [
-                ("Milk Chiya", 30, "Tea"),
-                ("Black Chiya", 20, "Tea"),
-                ("Masala Chiya", 40, "Tea"),
-                ("Samosa", 25, "Snacks"),
-                ("Momo (Buff)", 120, "Snacks")
-            ])
-
-        cursor.execute('''CREATE TABLE IF NOT EXISTS ingredients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT, quantity REAL, unit TEXT, min_threshold REAL
-        )''')
-        cursor.execute("SELECT COUNT(*) FROM ingredients")
-        if cursor.fetchone()[0] == 0:
-            cursor.executemany("INSERT INTO ingredients (name, quantity, unit, min_threshold) VALUES (?, ?, ?, ?)", [
-                ("Milk", 10.0, "Liter", 3.0),
-                ("Tea Leaves", 2.5, "KG", 0.5),
-                ("Sugar", 5.0, "KG", 1.0)
-            ])
-
-        cursor.execute('''CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            customer_name TEXT, customer_phone TEXT, customer_address TEXT,
-            order_type TEXT, table_number TEXT, payment_method TEXT,
-            payment_status TEXT, notes TEXT, discount REAL, subtotal REAL,
-            total_price REAL, status TEXT, created_at TEXT, staff_name TEXT
-        )''')
-
-        cursor.execute('''CREATE TABLE IF NOT EXISTS order_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_id INTEGER, product_id INTEGER, product_name TEXT,
-            price REAL, quantity INTEGER
-        )''')
-
-        cursor.execute('''CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT, amount REAL, created_at TEXT
-        )''')
-
-init_user_db()
 init_db()
 
-USERS = {
-    "9999": {"name": "Admin Owner", "role": "Admin"},
-    "1111": {"name": "Staff Ram", "role": "Staff"},
-    "2222": {"name": "Staff Sita", "role": "Staff"}
-}
-
-# ----------------
-# Pydantic Schemas
-# ----------------
-class LoginSchema(BaseModel):
-    username: str
-    password: str
-
-class LoginRequest(BaseModel):
+# --- リクエスト/レスポンス用 Pydantic モデル ---
+class LoginReq(BaseModel):
     pin: str
 
-class SelfOrderCreateSchema(BaseModel):
-    customer_name: str
-    customer_phone: str
-    table_number: str
-    notes: Optional[str] = ""
-    items: List[dict]
-
-class OrderItemSchema(BaseModel):
+class OrderItemInput(BaseModel):
     product_id: int
     quantity: int
 
-class OrderCreateSchema(BaseModel):
+class CreateOrderReq(BaseModel):
     customer_name: str
     customer_phone: str
     customer_address: Optional[str] = ""
@@ -148,307 +136,319 @@ class OrderCreateSchema(BaseModel):
     payment_method: str
     payment_status: str
     notes: Optional[str] = ""
-    discount: float = 0.0
+    discount: Optional[float] = 0.0
     staff_name: Optional[str] = "Admin"
-    items: List[OrderItemSchema]
+    items: List[OrderItemInput]
 
-class StatusUpdateSchema(BaseModel):
+class StatusUpdateReq(BaseModel):
     status: str
 
-class PaymentUpdateSchema(BaseModel):
+class PaymentUpdateReq(BaseModel):
     payment_status: str
 
-class IngredientCreateSchema(BaseModel):
+class IngredientReq(BaseModel):
     name: str
     quantity: float
     unit: str
     min_threshold: float
 
-class ExpenseCreateSchema(BaseModel):
+class ExpenseReq(BaseModel):
     title: str
     amount: float
 
-# ----------------
-# API Endpoints
-# ----------------
+# --- エンドポイント実装 ---
 
-@app.get("/")
-def home():
-    return {"message": "Welcome to Anupam Chiya Pasal API ☕"}
-
-# Login (Username & Password)
-@app.post("/login/user")
-def login_user(req: LoginSchema):
-    hashed_pass = hashlib.sha256(req.password.encode()).hexdigest()
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, username, role FROM users WHERE username = ? AND password = ?", (req.username, hashed_pass))
-    user = cursor.fetchone()
-    conn.close()
-    
-    if user:
-        return {"status": "success", "user": {"id": user[0], "username": user[1], "role": user[2]}}
-    raise HTTPException(status_code=401, detail="गलत प्रयोगकर्ता वा पासवर्ड!")
-
-# Login (PIN-based)
+# 1. ログイン認証
 @app.post("/login")
-@app.post("/api/login")
-def login_pin(req: LoginRequest):
-    if req.pin in USERS:
-        user = USERS[req.pin]
-        return {"status": "success", "name": user["name"], "role": user["role"]}
-    raise HTTPException(status_code=401, detail="Invalid PIN")
+def login(req: LoginReq):
+    pins = {
+        "9999": {"name": "Admin", "role": "Admin"},
+        "1111": {"name": "Ram", "role": "Staff"},
+        "2222": {"name": "Sita", "role": "Staff"}
+    }
+    if req.pin in pins:
+        return {"status": "success", **pins[req.pin]}
+    raise HTTPException(status_code=400, detail="無効なPINコードです")
 
-@app.get("/products")
-def get_products():
-    with get_db() as conn:
-        rows = conn.execute("SELECT id, name, price, category, is_available FROM products").fetchall()
-    return [{"id": r["id"], "name": r["name"], "price": r["price"], "category": r["category"], "is_available": bool(r["is_available"])} for r in rows]
-
-@app.put("/products/{product_id}/toggle")
-def toggle_product_availability(product_id: int):
-    with get_db() as conn:
-        conn.execute("UPDATE products SET is_available = NOT is_available WHERE id = ?", (product_id,))
-    return {"status": "success"}
-
+# 2. ダッシュボード統計
 @app.get("/stats")
 def get_stats():
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    with get_db() as conn:
-        today_paid = conn.execute(
-            "SELECT COUNT(*), SUM(total_price) FROM orders WHERE created_at LIKE ? AND payment_status = 'Paid'", 
-            (f"{today_str}%",)
-        ).fetchone()
-        today_orders_count = today_paid[0] or 0
-        today_revenue = today_paid[1] or 0.0
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    today = datetime.now().strftime("%Y-%m-%d")
 
-        pending_orders = conn.execute("SELECT COUNT(*) FROM orders WHERE status IN ('Pending', 'Preparing')").fetchone()[0] or 0
-        total_revenue = conn.execute("SELECT SUM(total_price) FROM orders WHERE payment_status = 'Paid'").fetchone()[0] or 0.0
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE created_at LIKE ?", (f"{today}%",))
+    today_orders = cursor.fetchone()[0]
 
-        top_item_row = conn.execute("""
-            SELECT product_name, SUM(quantity) as total_qty 
-            FROM order_items GROUP BY product_name ORDER BY total_qty DESC LIMIT 1
-        """).fetchone()
-        top_selling = top_item_row["product_name"] if top_item_row else "N/A"
+    cursor.execute("SELECT SUM(total_price) FROM orders WHERE created_at LIKE ? AND payment_status = 'Paid'", (f"{today}%",))
+    today_revenue = cursor.fetchone()[0] or 0.0
 
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE status = 'Pending'")
+    pending_orders = cursor.fetchone()[0]
+
+    cursor.execute("SELECT SUM(total_price) FROM orders WHERE payment_status = 'Paid'")
+    total_revenue = cursor.fetchone()[0] or 0.0
+
+    cursor.execute('''
+        SELECT product_name, SUM(quantity) as total_qty 
+        FROM order_items 
+        GROUP BY product_name 
+        ORDER BY total_qty DESC LIMIT 1
+    ''')
+    top_product = cursor.fetchone()
+    top_selling_product = top_product[0] if top_product else "N/A"
+
+    conn.close()
     return {
-        "today_orders": today_orders_count,
+        "today_orders": today_orders,
         "today_revenue": today_revenue,
         "pending_orders": pending_orders,
         "total_revenue": total_revenue,
-        "top_selling_product": top_selling
+        "top_selling_product": top_selling_product
     }
 
-@app.post("/public/order")
-def create_self_order(req: SelfOrderCreateSchema):
-    subtotal = 0.0
-    items_to_save = []
+# 3. 商品一覧・在庫切替
+@app.get("/products")
+def get_products():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, price, category, is_available FROM products")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": r[0], "name": r[1], "price": r[2], "category": r[3], "is_available": bool(r[4])} for r in rows]
 
-    with get_db() as conn:
-        cursor = conn.cursor()
-        for item in req.items:
-            p_id = item.get("product_id")
-            qty = item.get("quantity", 1)
-            prod = cursor.execute("SELECT name, price FROM products WHERE id = ?", (p_id,)).fetchone()
-            if prod:
-                subtotal += (prod["price"] * qty)
-                items_to_save.append((p_id, prod["name"], prod["price"], qty))
+@app.put("/products/{product_id}/toggle")
+def toggle_product(product_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE products SET is_available = CASE WHEN is_available = 1 THEN 0 ELSE 1 END WHERE id = ?", (product_id,))
+    conn.commit()
+    conn.close()
+    return {"message": "Toggled"}
 
-        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        cursor.execute("""
-            INSERT INTO orders (customer_name, customer_phone, customer_address, order_type, table_number,
-                                payment_method, payment_status, notes, discount, subtotal, total_price, status, created_at, staff_name)
-            VALUES (?, ?, '', 'Dine-in', ?, 'QR/Self', 'Unpaid', ?, 0.0, ?, ?, 'Pending', ?, 'Self-QR')
-        """, (req.customer_name, req.customer_phone, req.table_number, req.notes, subtotal, subtotal, created_at))
-        
-        order_id = cursor.lastrowid
-
-        for item in items_to_save:
-            cursor.execute("INSERT INTO order_items (order_id, product_id, product_name, price, quantity) VALUES (?, ?, ?, ?, ?)",
-                           (order_id, item[0], item[1], item[2], item[3]))
-
-    sms_msg = f"नमस्ते {req.customer_name}! चिया पसलमा तपाईंको अर्डर (Order #{order_id}) प्राप्त भयो। धन्यवाद!"
-    send_sms_alert(req.customer_phone, sms_msg)
-
-    return {"status": "success", "order_id": order_id, "message": "अर्डर सफलतापुर्वक प्राप्त भयो!"}
-
-@app.post("/orders")
-def create_order(req: OrderCreateSchema):
-    subtotal = 0.0
-    items_to_save = []
-
-    with get_db() as conn:
-        cursor = conn.cursor()
-        for item in req.items:
-            prod = cursor.execute("SELECT name, price FROM products WHERE id = ?", (item.product_id,)).fetchone()
-            if prod:
-                item_total = prod["price"] * item.quantity
-                subtotal += item_total
-                items_to_save.append((item.product_id, prod["name"], prod["price"], item.quantity))
-
-        total_price = max(0.0, subtotal - req.discount)
-        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        cursor.execute("""
-            INSERT INTO orders (customer_name, customer_phone, customer_address, order_type, table_number,
-                                payment_method, payment_status, notes, discount, subtotal, total_price, status, created_at, staff_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)
-        """, (req.customer_name, req.customer_phone, req.customer_address, req.order_type, req.table_number,
-              req.payment_method, req.payment_status, req.notes, req.discount, subtotal, total_price, created_at, req.staff_name))
-        
-        order_id = cursor.lastrowid
-
-        for item in items_to_save:
-            cursor.execute("INSERT INTO order_items (order_id, product_id, product_name, price, quantity) VALUES (?, ?, ?, ?, ?)",
-                           (order_id, item[0], item[1], item[2], item[3]))
-
-    return {"id": order_id, "status": "success"}
-
+# 4. 注文管理 (一覧・新規作成・詳細・状態更新)
 @app.get("/orders")
 def get_orders():
-    with get_db() as conn:
-        orders_rows = conn.execute("SELECT * FROM orders ORDER BY id DESC").fetchall()
-        orders = []
-        for r in orders_rows:
-            item_rows = conn.execute("SELECT product_id, product_name, price, quantity FROM order_items WHERE order_id = ?", (r["id"],)).fetchall()
-            items = [{"product_id": i["product_id"], "product_name": i["product_name"], "price": i["price"], "quantity": i["quantity"]} for i in item_rows]
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, customer_name, customer_phone, customer_address, order_type, table_number, payment_method, payment_status, notes, discount, staff_name, subtotal, total_price, status, created_at FROM orders ORDER BY id DESC")
+    orders = cursor.fetchall()
+    
+    result = []
+    for o in orders:
+        order_id = o[0]
+        cursor.execute("SELECT product_id, product_name, quantity, price FROM order_items WHERE order_id = ?", (order_id,))
+        items = [{"product_id": i[0], "product_name": i[1], "quantity": i[2], "price": i[3]} for i in cursor.fetchall()]
+        result.append({
+            "id": o[0], "customer_name": o[1], "customer_phone": o[2], "customer_address": o[3],
+            "order_type": o[4], "table_number": o[5], "payment_method": o[6], "payment_status": o[7],
+            "notes": o[8], "discount": o[9], "staff_name": o[10], "subtotal": o[11],
+            "total_price": o[12], "status": o[13], "created_at": o[14], "items": items
+        })
+    conn.close()
+    return result
 
-            orders.append({
-                "id": r["id"], "customer_name": r["customer_name"], "customer_phone": r["customer_phone"], 
-                "customer_address": r["customer_address"], "order_type": r["order_type"], "table_number": r["table_number"], 
-                "payment_method": r["payment_method"], "payment_status": r["payment_status"], "notes": r["notes"], 
-                "discount": r["discount"], "subtotal": r["subtotal"], "total_price": r["total_price"],
-                "status": r["status"], "created_at": r["created_at"], "staff_name": r["staff_name"], "items": items
-            })
+@app.get("/orders/{order_id}")
+def get_order_by_id(order_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, customer_name, customer_phone, customer_address, order_type, table_number, payment_method, payment_status, notes, discount, staff_name, subtotal, total_price, status, created_at FROM orders WHERE id = ?", (order_id,))
+    o = cursor.fetchone()
+    if not o:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    cursor.execute("SELECT product_id, product_name, quantity, price FROM order_items WHERE order_id = ?", (order_id,))
+    items = [{"product_id": i[0], "product_name": i[1], "quantity": i[2], "price": i[3]} for i in cursor.fetchall()]
+    conn.close()
+    return {
+        "id": o[0], "customer_name": o[1], "customer_phone": o[2], "customer_address": o[3],
+        "order_type": o[4], "table_number": o[5], "payment_method": o[6], "payment_status": o[7],
+        "notes": o[8], "discount": o[9], "staff_name": o[10], "subtotal": o[11],
+        "total_price": o[12], "status": o[13], "created_at": o[14], "items": items
+    }
 
-    return orders
+@app.post("/orders")
+def create_order(req: CreateOrderReq):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    subtotal = 0.0
+    items_to_insert = []
+    
+    for item in req.items:
+        cursor.execute("SELECT name, price FROM products WHERE id = ?", (item.product_id,))
+        prod = cursor.fetchone()
+        if prod:
+            p_name, p_price = prod[0], prod[1]
+            subtotal += p_price * item.quantity
+            items_to_insert.append((item.product_id, p_name, item.quantity, p_price))
+
+    total_price = max(0.0, subtotal - req.discount)
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    cursor.execute('''
+        INSERT INTO orders (customer_name, customer_phone, customer_address, order_type, table_number, payment_method, payment_status, notes, discount, staff_name, subtotal, total_price, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?)
+    ''', (req.customer_name, req.customer_phone, req.customer_address, req.order_type, req.table_number, req.payment_method, req.payment_status, req.notes, req.discount, req.staff_name, subtotal, total_price, created_at))
+    
+    order_id = cursor.lastrowid
+
+    for item in items_to_insert:
+        cursor.execute('''
+            INSERT INTO order_items (order_id, product_id, product_name, quantity, price)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (order_id, item[0], item[1], item[2], item[3]))
+
+    conn.commit()
+    conn.close()
+    return {"message": "Order created successfully", "order_id": order_id}
 
 @app.put("/orders/{order_id}/status")
-def update_order_status(order_id: int, req: StatusUpdateSchema):
-    with get_db() as conn:
-        cursor = conn.cursor()
-        order_data = cursor.execute("SELECT customer_name, customer_phone FROM orders WHERE id = ?", (order_id,)).fetchone()
-        cursor.execute("UPDATE orders SET status = ? WHERE id = ?", (req.status, order_id))
-
-    if order_data and order_data["customer_phone"]:
-        c_name = order_data["customer_name"]
-        c_phone = order_data["customer_phone"]
-        if req.status == "Preparing":
-            send_sms_alert(c_phone, f"नमस्ते {c_name}, तपाईंको अर्डर (Order #{order_id}) भान्सामा तयार हुँदैछ ☕")
-        elif req.status == "Completed":
-            send_sms_alert(c_phone, f"नमस्ते {c_name}, तपाईंको अर्डर (Order #{order_id}) तयार भयो! कृपया लिनुहोला/आनन्द लिनुहोला 🙏")
-
-    return {"status": "success"}
+def update_order_status(order_id: int, req: StatusUpdateReq):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE orders SET status = ? WHERE id = ?", (req.status, order_id))
+    conn.commit()
+    conn.close()
+    return {"message": "Status updated"}
 
 @app.put("/orders/{order_id}/payment")
-def update_payment_status(order_id: int, req: PaymentUpdateSchema):
-    with get_db() as conn:
-        conn.execute("UPDATE orders SET payment_status = ? WHERE id = ?", (req.payment_status, order_id))
-    return {"status": "success"}
+def update_payment_status(order_id: int, req: PaymentUpdateReq):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE orders SET payment_status = ? WHERE id = ?", (req.payment_status, order_id))
+    conn.commit()
+    conn.close()
+    return {"message": "Payment status updated"}
 
-@app.get("/customers/{phone}")
-def check_loyalty(phone: str):
-    with get_db() as conn:
-        order_count = conn.execute("SELECT COUNT(*) FROM orders WHERE customer_phone = ?", (phone,)).fetchone()[0] or 0
-    
-    if order_count >= 5:
-        return {"message": f"🏆 VIP Customer! ({order_count} अर्डर पुरा)", "discount_percent": 10}
-    elif order_count > 0:
-        return {"message": f"✨ Regular Customer ({order_count} अर्डर पुरा)", "discount_percent": 0}
-    return {"message": "🆕 नयाँ ग्राहक", "discount_percent": 0}
-
+# 5. 原材料（Raw Inventory）管理
 @app.get("/ingredients")
 def get_ingredients():
-    with get_db() as conn:
-        rows = conn.execute("SELECT id, name, quantity, unit, min_threshold FROM ingredients").fetchall()
-    return [{"id": r["id"], "name": r["name"], "quantity": r["quantity"], "unit": r["unit"], "min_threshold": r["min_threshold"]} for r in rows]
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, quantity, unit, min_threshold FROM ingredients")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": r[0], "name": r[1], "quantity": r[2], "unit": r[3], "min_threshold": r[4]} for r in rows]
 
 @app.post("/ingredients")
-def add_ingredient(req: IngredientCreateSchema):
-    with get_db() as conn:
-        conn.execute("INSERT INTO ingredients (name, quantity, unit, min_threshold) VALUES (?, ?, ?, ?)",
-                     (req.name, req.quantity, req.unit, req.min_threshold))
-    return {"status": "success"}
+def add_ingredient(req: IngredientReq):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO ingredients (name, quantity, unit, min_threshold) VALUES (?, ?, ?, ?)",
+                   (req.name, req.quantity, req.unit, req.min_threshold))
+    conn.commit()
+    conn.close()
+    return {"message": "Ingredient added"}
 
-@app.put("/ingredients/{ing_id}/restock")
-def restock_ingredient(ing_id: int, added_qty: float = Query(...)):
-    with get_db() as conn:
-        conn.execute("UPDATE ingredients SET quantity = quantity + ? WHERE id = ?", (added_qty, ing_id))
-    return {"status": "success"}
+@app.put("/ingredients/{ingredient_id}/restock")
+def restock_ingredient(ingredient_id: int, added_qty: float = Query(...)):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE ingredients SET quantity = quantity + ? WHERE id = ?", (added_qty, ingredient_id))
+    conn.commit()
+    conn.close()
+    return {"message": "Restocked"}
 
+# 6. 経費（Expense Tracker）管理
 @app.get("/expenses")
 def get_expenses():
-    with get_db() as conn:
-        rows = conn.execute("SELECT id, title, amount, created_at FROM expenses ORDER BY id DESC").fetchall()
-    return [{"id": r["id"], "title": r["title"], "amount": r["amount"], "created_at": r["created_at"]} for r in rows]
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, title, amount, created_at FROM expenses ORDER BY id DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": r[0], "title": r[1], "amount": r[2], "created_at": r[3]} for r in rows]
 
 @app.post("/expenses")
-def add_expense(req: ExpenseCreateSchema):
+def add_expense(req: ExpenseReq):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with get_db() as conn:
-        conn.execute("INSERT INTO expenses (title, amount, created_at) VALUES (?, ?, ?)", (req.title, req.amount, created_at))
-    return {"status": "success"}
+    cursor.execute("INSERT INTO expenses (title, amount, created_at) VALUES (?, ?, ?)", (req.title, req.amount, created_at))
+    conn.commit()
+    conn.close()
+    return {"message": "Expense added"}
 
-@app.delete("/expenses/{exp_id}")
-def delete_expense(exp_id: int):
-    with get_db() as conn:
-        conn.execute("DELETE FROM expenses WHERE id = ?", (exp_id,))
-    return {"status": "deleted"}
+@app.delete("/expenses/{expense_id}")
+def delete_expense(expense_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+    conn.commit()
+    conn.close()
+    return {"message": "Expense deleted"}
 
-@app.get("/export/orders-csv")
-def export_orders_csv():
-    with get_db() as conn:
-        rows = conn.execute("SELECT id, created_at, customer_name, customer_phone, order_type, table_number, total_price, payment_method, payment_status, status, staff_name FROM orders").fetchall()
+# 7. ロイヤリティチェック (Loyalty Badge)
+@app.get("/customers/{phone}")
+def check_loyalty(phone: str):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE customer_phone = ?", (phone,))
+    count = cursor.fetchone()[0]
+    conn.close()
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Order ID", "Date", "Customer Name", "Phone", "Type", "Table", "Total Price", "Payment Method", "Payment Status", "Status", "Staff"])
-    for r in rows:
-        writer.writerow(list(r))
-    
-    output.seek(0)
-    return StreamingResponse(
-        io.BytesIO(output.getvalue().encode()),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=orders_report.csv"}
-    )
+    if count >= 5:
+        return {"message": f"👑 VIP顧客 (訪問回数: {count}回) - 10% OFF対象!", "discount_percent": 10, "order_count": count}
+    elif count >= 2:
+        return {"message": f"🌟 常連様 (訪問回数: {count}回)", "discount_percent": 0, "order_count": count}
+    else:
+        return {"message": "🆕 ご新規様", "discount_percent": 0, "order_count": count}
 
+# 8. カテゴリ別売上グラフデータ
 @app.get("/stats/category-sales")
 def get_category_sales():
-    with get_db() as conn:
-        rows = conn.execute("""
-            SELECT p.category, SUM(oi.quantity * oi.price) as total_sales
-            FROM order_items oi
-            JOIN products p ON oi.product_id = p.id
-            GROUP BY p.category
-        """).fetchall()
-    return [{"category": r["category"], "total_sales": r["total_sales"]} for r in rows]
-
-@app.get("/khata")
-def get_udharo_khata():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT customer_name, customer_phone, COUNT(id) as pending_bills, SUM(total_price) as total_due
-        FROM orders 
-        WHERE payment_status = 'Unpaid' AND customer_phone != ''
+    cursor.execute('''
+        SELECT p.category, SUM(oi.quantity * oi.price) as total_sales
+        FROM order_items oi
+        JOIN products p ON oi.product_id = p.id
+        JOIN orders o ON oi.order_id = o.id
+        WHERE o.payment_status = 'Paid'
+        GROUP BY p.category
+    ''')
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"category": r[0], "total_sales": r[1]} for r in rows]
+
+# 9. ツケ払い（Khata System）管理
+@app.get("/khata")
+def get_khata():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT customer_name, customer_phone, COUNT(*) as pending_bills, SUM(total_price) as total_due
+        FROM orders
+        WHERE payment_status = 'Unpaid'
         GROUP BY customer_phone
-        ORDER BY total_due DESC
-    """)
+    ''')
     rows = cursor.fetchall()
     conn.close()
     return [{"customer_name": r[0], "customer_phone": r[1], "pending_bills": r[2], "total_due": r[3]} for r in rows]
 
 @app.put("/khata/{phone}/clear")
-def clear_udharo(phone: str):
-    conn = sqlite3.connect(DB_FILE)
+def clear_khata(phone: str):
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE orders 
-        SET payment_status = 'Paid', payment_method = 'Cash (Khata Cleared)'
-        WHERE customer_phone = ? AND payment_status = 'Unpaid'
-    """, (phone,))
+    cursor.execute("UPDATE orders SET payment_status = 'Paid' WHERE customer_phone = ? AND payment_status = 'Unpaid'", (phone,))
     conn.commit()
     conn.close()
-    return {"status": "success", "message": f"{phone} को सम्पूर्ण उधारो चुक्ता भयो!"}
+    return {"message": "Khata cleared"}
+
+# 10. Excel / CSV エクスポート
+@app.get("/export/orders-csv")
+def export_csv():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, customer_name, customer_phone, order_type, table_number, total_price, payment_method, payment_status, status, created_at FROM orders")
+    rows = cursor.fetchall()
+    conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Order ID", "Customer Name", "Phone", "Order Type", "Table", "Total Price", "Payment Method", "Payment Status", "Order Status", "Created At"])
+    writer.writerows(rows)
+
+    return Response(content=output.getvalue(), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=orders.csv"})
